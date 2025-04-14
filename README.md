@@ -15,7 +15,8 @@ Lessons learned along the way
 These writeups serve as both my personal notes and resources for the community. Security is a journey, not a destination - and sharing knowledge helps us all level up together.
 Organization
 Each machine has its own dedicated folder with a comprehensive markdown writeup and any relevant scripts or files used during the exploitation process. Machines are organized by difficulty level and release date.
-Disclaimer
+
+**Disclaimer**
 These writeups are published after machines are retired from the active rotation on Hack The Box, in accordance with their terms of service. All information shared here is for educational purposes only.
 Let's Connect
 If you have questions, suggestions, or just want to talk security, feel free to reach out or open an issue. Happy hacking!

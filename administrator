@@ -1,4 +1,10 @@
-# HTB Box: Administrator (10.129.251.186) - Walkthrough
+# HTB Box - Walkthrough
+
+Name: Administrator (10.129.251.186) 
+Difficulty: medium
+Platform: windows
+Type: active directory
+Skills: acl abuse, kerberoasting, smb enum, bloodhound, dcsync, pass-the-hash
 
 ## Introduction
 
